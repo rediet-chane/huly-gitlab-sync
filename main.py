@@ -1,4 +1,4 @@
-# main.py - Complete Production Version with Database + Dashboard
+# main.py - Complete Production Version with Fixed Path
 from fastapi import FastAPI, Request, Header, HTTPException
 from fastapi.responses import HTMLResponse
 import uvicorn
@@ -13,6 +13,8 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
+import subprocess
+import sys
 
 load_dotenv()
 
@@ -110,7 +112,26 @@ HULY_PROJECT_IDENTIFIER = os.getenv("HULY_PROJECT_IDENTIFIER")
 HULY_CONFIGURED = bool(HULY_EMAIL and HULY_PASSWORD and HULY_WORKSPACE)
 HULY_READY = bool(HULY_CONFIGURED and HULY_PROJECT_IDENTIFIER)
 
-BRIDGE_SCRIPT = Path(__file__).resolve().parent / "huly_api.js"
+# ============================================================
+# FIND BRIDGE SCRIPT (FIXED)
+# ============================================================
+
+def find_bridge_script():
+    """Find huly_api.js in the project directory"""
+    # Get the directory where main.py is located
+    current_dir = Path(__file__).resolve().parent
+    bridge_path = current_dir / "huly_api.js"
+    
+    # If not found in current dir, try the working directory
+    if not bridge_path.exists():
+        bridge_path = Path.cwd() / "huly_api.js"
+    
+    print(f"🔍 Bridge script path: {bridge_path}")
+    print(f"📁 File exists: {bridge_path.exists()}")
+    
+    return bridge_path
+
+BRIDGE_SCRIPT = find_bridge_script()
 
 # ============================================================
 # ENDPOINTS
@@ -128,6 +149,7 @@ async def root():
         "gitlab_configured": bool(GITLAB_API_TOKEN),
         "status": "ready" if HULY_READY else "needs_project_identifier",
         "stats": get_stats(),
+        "bridge_script_exists": BRIDGE_SCRIPT.exists(),
         "note": None if HULY_READY else (
             "HULY_PROJECT_IDENTIFIER not set. Run: "
             "node huly_api.js --list-projects, then add it to .env"
@@ -302,21 +324,33 @@ async def send_to_huly(title: str, description: str, status: str) -> tuple[bool,
         return False, "Huly not fully configured"
 
     if not BRIDGE_SCRIPT.exists():
-        return False, f"Bridge script not found"
+        return False, f"Bridge script not found at {BRIDGE_SCRIPT}"
+
+    # Use which to find node
+    node_cmd = "node"
+    if sys.platform == "win32":
+        node_cmd = "node.exe"
+    
+    # Try to find node in PATH
+    import shutil
+    node_path = shutil.which(node_cmd)
+    if node_path:
+        node_cmd = node_path
+        print(f"🔍 Found node at: {node_cmd}")
 
     proc = await asyncio.create_subprocess_exec(
-        "node", str(BRIDGE_SCRIPT), title, description, status,
+        node_cmd, str(BRIDGE_SCRIPT), title, description, status,
         cwd=str(BRIDGE_SCRIPT.parent),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
 
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=90.0)
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=180.0)
     except asyncio.TimeoutError:
         proc.kill()
         await proc.wait()
-        return False, "timed out after 90s"
+        return False, "timed out after 180s waiting for Huly"
 
     if stderr:
         for line in stderr.decode(errors="replace").splitlines():
@@ -346,16 +380,6 @@ def log_issue(issue_iid, title, description, state, author, project, url, create
     print("📄 Description:")
     print(description if description else "  (No description)")
     print("=" * 60 + "\n")
-    
-    print("\n📋 HULY ISSUE TEMPLATE:")
-    print("-" * 40)
-    print(f"Title: {title}")
-    print(f"Description: {description[:200] + '...' if description and len(description) > 200 else description}")
-    print(f"Status: Todo")
-    print(f"Priority: Medium")
-    print(f"Tags: gitlab, sync, #{issue_iid}")
-    print(f"URL: {url}")
-    print("-" * 40)
 
 # ============================================================
 # MAIN
