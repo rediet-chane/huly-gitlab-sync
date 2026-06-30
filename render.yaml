@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: huly-gitlab-sync
+    runtime: python
+    buildCommand: |
+      pip install -r requirements.txt
+      npm install
+    startCommand: uvicorn main:app --host 0.0.0.0 --port 10000
+    envVars:
+      - key: GITLAB_WEBHOOK_SECRET
+        sync: false
+      - key: GITLAB_WEBHOOK_SIGNING_TOKEN
+        sync: false
+      - key: GITLAB_API_TOKEN
+        sync: false
+      - key: HULY_EMAIL
+        sync: false
+      - key: HULY_PASSWORD
+        sync: false
+      - key: HULY_WORKSPACE
+        sync: false
+      - key: HULY_PROJECT_IDENTIFIER
+        sync: false
+      - key: HULY_URL
+        value: https://huly.app
+      - key: GITLAB_API_URL
+        value: https://gitlab.com/api/v4
