@@ -225,7 +225,24 @@ async def test_huly():
         "project_identifier": HULY_PROJECT_IDENTIFIER,
         "note": None if HULY_READY else "Run 'node huly_api.js --list-projects' to find your project identifier.",
     }
-
+@app.get("/fix-sync")
+async def fix_sync():
+    """Manually mark all issues as synced"""
+    try:
+        conn = sqlite3.connect('webhooks.db')
+        c = conn.cursor()
+        c.execute('UPDATE issues SET synced_to_huly = "yes" WHERE synced_to_huly = "no"')
+        conn.commit()
+        count = c.rowcount
+        conn.close()
+        return {
+            "status": "success",
+            "message": f"✅ Updated {count} issues to synced!",
+            "updated_count": count
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+        
 @app.post("/webhook/gitlab")
 async def gitlab_webhook(
     request: Request,
