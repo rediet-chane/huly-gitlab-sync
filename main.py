@@ -1,4 +1,4 @@
-# main.py - Complete Production Version with Fixed Path
+# main.py - Complete Production Version
 from fastapi import FastAPI, Request, Header, HTTPException
 from fastapi.responses import HTMLResponse
 import uvicorn
@@ -15,6 +15,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 import subprocess
 import sys
+import shutil
 
 load_dotenv()
 
@@ -102,6 +103,7 @@ init_db()
 
 GITLAB_API_URL = os.getenv("GITLAB_API_URL", "https://gitlab.com/api/v4")
 GITLAB_API_TOKEN = os.getenv("GITLAB_API_TOKEN")
+GITLAB_PROJECT_ID = os.getenv("GITLAB_PROJECT_ID")
 
 HULY_URL = os.getenv("HULY_URL", "https://huly.app")
 HULY_WORKSPACE = os.getenv("HULY_WORKSPACE")
@@ -113,16 +115,14 @@ HULY_CONFIGURED = bool(HULY_EMAIL and HULY_PASSWORD and HULY_WORKSPACE)
 HULY_READY = bool(HULY_CONFIGURED and HULY_PROJECT_IDENTIFIER)
 
 # ============================================================
-# FIND BRIDGE SCRIPT (FIXED)
+# FIND BRIDGE SCRIPT
 # ============================================================
 
 def find_bridge_script():
     """Find huly_api.js in the project directory"""
-    # Get the directory where main.py is located
     current_dir = Path(__file__).resolve().parent
     bridge_path = current_dir / "huly_api.js"
     
-    # If not found in current dir, try the working directory
     if not bridge_path.exists():
         bridge_path = Path.cwd() / "huly_api.js"
     
@@ -225,6 +225,7 @@ async def test_huly():
         "project_identifier": HULY_PROJECT_IDENTIFIER,
         "note": None if HULY_READY else "Run 'node huly_api.js --list-projects' to find your project identifier.",
     }
+
 @app.get("/fix-sync")
 async def fix_sync():
     """Manually mark all issues as synced"""
@@ -242,7 +243,25 @@ async def fix_sync():
         }
     except Exception as e:
         return {"status": "error", "message": str(e)}
-        
+
+@app.post("/fix-sync/{iid}")
+async def fix_single_sync(iid: str):
+    """Mark a specific issue as synced"""
+    try:
+        conn = sqlite3.connect('webhooks.db')
+        c = conn.cursor()
+        c.execute('UPDATE issues SET synced_to_huly = "yes" WHERE iid = ?', (iid,))
+        conn.commit()
+        count = c.rowcount
+        conn.close()
+        return {
+            "status": "success",
+            "message": f"✅ Issue #{iid} marked as synced!",
+            "updated": count > 0
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 @app.post("/webhook/gitlab")
 async def gitlab_webhook(
     request: Request,
@@ -257,7 +276,6 @@ async def gitlab_webhook(
     verified = False
     signing_token = os.getenv("GITLAB_WEBHOOK_SIGNING_TOKEN")
 
-    # HMAC verification
     if signing_token and webhook_signature and webhook_id and webhook_timestamp:
         raw_key = base64.b64decode(signing_token.removeprefix("whsec_"))
         message = f"{webhook_id}.{webhook_timestamp}.{raw_body.decode('utf-8')}".encode("utf-8")
@@ -266,7 +284,6 @@ async def gitlab_webhook(
         verified = hmac.compare_digest(expected, webhook_signature)
         print("✅ Signing token (HMAC) verified!" if verified else "❌ Signing token mismatch")
     else:
-        # Fall back to secret token
         expected_token = os.getenv("GITLAB_WEBHOOK_SECRET")
         if expected_token and x_gitlab_token:
             verified = hmac.compare_digest(expected_token, x_gitlab_token)
@@ -285,6 +302,32 @@ async def gitlab_webhook(
 
     return {"status": "success", "event": event_type}
 
+@app.post("/webhook/huly")
+async def huly_webhook(request: Request):
+    """Receive webhooks from Huly and create issues in GitLab"""
+    try:
+        payload = await request.json()
+        print(f"📨 Received webhook from Huly: {payload}")
+        
+        title = payload.get('title')
+        description = payload.get('description')
+        status = payload.get('state', 'opened')
+        project = payload.get('project', GITLAB_PROJECT_ID)
+        
+        if title and project:
+            success = await create_gitlab_issue(title, description, status, project)
+            if success:
+                print(f"✅ Created GitLab issue: {title}")
+                return {"status": "success", "message": "GitLab issue created"}
+            else:
+                return {"status": "error", "message": "Failed to create GitLab issue"}
+        
+        return {"status": "success", "message": "No action needed"}
+        
+    except Exception as e:
+        print(f"❌ Huly webhook error: {e}")
+        return {"status": "error", "message": str(e)}
+
 # ============================================================
 # WEBHOOK PROCESSING
 # ============================================================
@@ -300,7 +343,6 @@ async def process_issue_event(payload: dict):
         print("❌ No issue data found")
         return
 
-    # Extract data
     issue_iid = issue_data.get('iid')
     title = issue_data.get('title')
     description = issue_data.get('description', '')
@@ -313,10 +355,8 @@ async def process_issue_event(payload: dict):
     print(f"📝 Issue: #{issue_iid} - {title}")
     print(f"   State: {state} | Author: {author_username} | Project: {project_name}")
 
-    # Save to database immediately
     save_issue_to_db(issue_iid, title, description, state, author_username, project_name, gitlab_url, created_at, synced=False)
 
-    # Try to create in Huly
     status_map = {"opened": "Todo", "closed": "Done", "reopened": "Todo"}
     huly_status = status_map.get(state, "Todo")
     huly_description = f"{description}\n\n---\n**Source**: GitLab\n**Issue**: #{issue_iid}\n**URL**: {gitlab_url}"
@@ -325,7 +365,6 @@ async def process_issue_event(payload: dict):
 
     if success:
         print(f"✅ Created in Huly: {result}")
-        # Update database to mark as synced
         conn = sqlite3.connect('webhooks.db')
         c = conn.cursor()
         c.execute('UPDATE issues SET synced_to_huly = "yes" WHERE iid = ?', (issue_iid,))
@@ -343,13 +382,10 @@ async def send_to_huly(title: str, description: str, status: str) -> tuple[bool,
     if not BRIDGE_SCRIPT.exists():
         return False, f"Bridge script not found at {BRIDGE_SCRIPT}"
 
-    # Use which to find node
     node_cmd = "node"
     if sys.platform == "win32":
         node_cmd = "node.exe"
     
-    # Try to find node in PATH
-    import shutil
     node_path = shutil.which(node_cmd)
     if node_path:
         node_cmd = node_path
@@ -377,37 +413,6 @@ async def send_to_huly(title: str, description: str, status: str) -> tuple[bool,
         return True, stdout.decode(errors="replace").strip()
     else:
         return False, stdout.decode(errors="replace").strip() or f"node exited with code {proc.returncode}"
-
-# ============================================================
-# FALLBACK LOGGING
-# ============================================================
-@app.post("/webhook/huly")
-async def huly_webhook(request: Request):
-    """Receive webhooks from Huly and create issues in GitLab"""
-    try:
-        payload = await request.json()
-        print(f"📨 Received webhook from Huly: {payload}")
-        
-        # Extract issue data from Huly
-        title = payload.get('title')
-        description = payload.get('description')
-        status = payload.get('status', 'opened')
-        project = payload.get('project', os.getenv("GITLAB_PROJECT_ID"))
-        
-        if title:
-            # Create issue in GitLab
-            success = await create_gitlab_issue(title, description, status, project)
-            if success:
-                print(f"✅ Created GitLab issue: {title}")
-                return {"status": "success", "message": "GitLab issue created"}
-            else:
-                return {"status": "error", "message": "Failed to create GitLab issue"}
-        
-        return {"status": "success", "message": "No action needed"}
-        
-    except Exception as e:
-        print(f"❌ Huly webhook error: {e}")
-        return {"status": "error", "message": str(e)}
 
 async def create_gitlab_issue(title, description, state, project_id):
     """Create an issue in GitLab"""
@@ -445,7 +450,11 @@ async def create_gitlab_issue(title, description, state, project_id):
         except Exception as e:
             print(f"❌ Error creating GitLab issue: {e}")
             return False
-            
+
+# ============================================================
+# FALLBACK LOGGING
+# ============================================================
+
 def log_issue(issue_iid, title, description, state, author, project, url, created):
     """Log issue with full details"""
     print("\n" + "=" * 60)

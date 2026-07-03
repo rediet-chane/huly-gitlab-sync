@@ -121,8 +121,10 @@
                         <span class="tag status-${w.state}">${w.state || 'unknown'}</span>
                         <span class="tag">👤 ${w.author || 'unknown'}</span>
                         <span class="tag">📂 ${w.project || 'unknown'}</span>
-                        <span class="tag synced-${w.synced_to_huly || 'no'}">${w.synced_to_huly === 'yes' ? '✅ Synced' : '⏳ Pending'}</span>
-                    </div>
+                        <span class="tag ${w.synced_to_huly === 'yes' || w.url ? 'synced-yes' : 'synced-no'}">
+    ${w.synced_to_huly === 'yes' || (w.url && w.url.includes('work_items')) ? '✅ Synced' : '⏳ Pending'}
+</span>
+                        </div>
                     <div class="webhook-meta">📅 Received: ${new Date(w.received_at).toLocaleString()}</div>
                     <div class="webhook-url">🔗 <a href="${w.url}" target="_blank">${w.url || 'No URL'}</a></div>
                     <div class="webhook-desc">${w.description || 'No description'}</div>

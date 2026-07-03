@@ -32,6 +32,16 @@ const HULY_PROJECT_IDENTIFIER = process.env.HULY_PROJECT_IDENTIFIER;
  * Opens an MCP connection to the @firfi/huly-mcp server (spawned via npx),
  * runs `fn(client)`, then always closes the connection.
  */
+// Add these lines at the very top
+process.on('uncaughtException', (err) => {
+    console.error('❌ Uncaught Exception:', err.message);
+    process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('❌ Unhandled Rejection:', reason);
+    process.exit(1);
+});
 async function withHulyClient(fn) {
     if (!HULY_EMAIL || !HULY_PASSWORD || !HULY_WORKSPACE) {
         console.error('❌ Missing HULY_EMAIL, HULY_PASSWORD or HULY_WORKSPACE in .env');
