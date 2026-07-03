@@ -381,7 +381,71 @@ async def send_to_huly(title: str, description: str, status: str) -> tuple[bool,
 # ============================================================
 # FALLBACK LOGGING
 # ============================================================
+@app.post("/webhook/huly")
+async def huly_webhook(request: Request):
+    """Receive webhooks from Huly and create issues in GitLab"""
+    try:
+        payload = await request.json()
+        print(f"📨 Received webhook from Huly: {payload}")
+        
+        # Extract issue data from Huly
+        title = payload.get('title')
+        description = payload.get('description')
+        status = payload.get('status', 'opened')
+        project = payload.get('project', os.getenv("GITLAB_PROJECT_ID"))
+        
+        if title:
+            # Create issue in GitLab
+            success = await create_gitlab_issue(title, description, status, project)
+            if success:
+                print(f"✅ Created GitLab issue: {title}")
+                return {"status": "success", "message": "GitLab issue created"}
+            else:
+                return {"status": "error", "message": "Failed to create GitLab issue"}
+        
+        return {"status": "success", "message": "No action needed"}
+        
+    except Exception as e:
+        print(f"❌ Huly webhook error: {e}")
+        return {"status": "error", "message": str(e)}
 
+async def create_gitlab_issue(title, description, state, project_id):
+    """Create an issue in GitLab"""
+    if not GITLAB_API_TOKEN:
+        print("❌ GitLab token not configured")
+        return False
+    
+    headers = {
+        "Authorization": f"Bearer {GITLAB_API_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    
+    data = {
+        "title": title,
+        "description": f"{description}\n\n---\n**Source**: Huly\n**Synced**: {datetime.now().isoformat()}",
+        "state": state
+    }
+    
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(
+                f"{GITLAB_API_URL}/projects/{project_id}/issues",
+                headers=headers,
+                json=data,
+                timeout=10
+            )
+            
+            if response.status_code == 201:
+                issue = response.json()
+                print(f"✅ Created GitLab issue: #{issue['iid']} - {title}")
+                return True
+            else:
+                print(f"❌ GitLab API error: {response.status_code} - {response.text}")
+                return False
+        except Exception as e:
+            print(f"❌ Error creating GitLab issue: {e}")
+            return False
+            
 def log_issue(issue_iid, title, description, state, author, project, url, created):
     """Log issue with full details"""
     print("\n" + "=" * 60)
