@@ -173,6 +173,7 @@ async def poll_huly_forever():
 
 async def sync_huly_to_gitlab():
     if not HULY_READY or not GITLAB_API_TOKEN or not GITLAB_PROJECT_ID:
+        print(f"⚠️  Sync skipped - HULY_READY={HULY_READY}, GITLAB_API_TOKEN={bool(GITLAB_API_TOKEN)}, GITLAB_PROJECT_ID={GITLAB_PROJECT_ID}")
         return
 
     print("🔄 Polling Huly for new issues...")
@@ -181,31 +182,44 @@ async def sync_huly_to_gitlab():
         print(f"⚠️  Huly list failed: {out[:200]}")
         return
 
+    print(f"📥 Bridge output length: {len(out)}")
+
     try:
         data = json.loads(out)
-        # Handle the 'result' wrapper
         huly_issues = data.get('result', [])
         if not huly_issues:
             print("⚠️  No issues found in Huly response")
             return
         print(f"📊 Found {len(huly_issues)} issues in Huly")
-    except json.JSONDecodeError:
-        print(f"⚠️  Could not parse Huly issue list: {out[:100]}")
+    except json.JSONDecodeError as e:
+        print(f"⚠️  Could not parse Huly issue list: {e}")
+        print(f"⚠️  First 200 chars: {out[:200]}")
         return
 
     known = get_known_huly_identifiers()
+    print(f"📊 Known identifiers in DB: {len(known)}")
+    if known:
+        print(f"   First 5 known: {list(known)[:5]}")
+
     new_count = 0
 
     for issue in huly_issues:
         identifier = issue.get("identifier")
-        if not identifier or identifier in known:
+        title = issue.get("title", "(no title)")
+        status = issue.get("status", "")
+
+        if not identifier:
+            print(f"⏭️  Skipping issue with no identifier: {title}")
             continue
 
-        title  = issue.get("title", "(no title)")
-        status = issue.get("status", "")
-        desc   = f"Synced from Huly\n\n**Huly ID**: {identifier}\n**Status**: {status}"
+        if identifier in known:
+            print(f"⏭️  Already known: {identifier} - {title}")
+            continue
 
-        print(f"🔄 New Huly issue → GitLab: {identifier} — {title}")
+        print(f"🔄 **NEW ISSUE FOUND!** → GitLab: {identifier} — {title}")
+
+        desc = f"Synced from Huly\n\n**Huly ID**: {identifier}\n**Status**: {status}"
+
         success = await create_gitlab_issue(title, desc, GITLAB_PROJECT_ID)
         if success:
             save_issue(
@@ -216,6 +230,9 @@ async def sync_huly_to_gitlab():
                 huly_identifier=identifier, source="huly",
             )
             new_count += 1
+            print(f"✅ Saved to database: {identifier}")
+        else:
+            print(f"❌ Failed to create GitLab issue for {identifier}")
 
     print(f"✅ Huly poll done — {new_count} new issue(s) pushed to GitLab")
     
@@ -343,7 +360,7 @@ async def trigger_poll():
         return {"status": "polling_completed", "message": "Check GitLab for new issues"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
-        
+
 @app.post("/webhook/huly")
 async def huly_webhook(request: Request):
     """Placeholder — Huly doesn't support outbound webhooks yet.
