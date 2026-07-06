@@ -1,6 +1,6 @@
-# main.py
 from fastapi import FastAPI, Request, Header, HTTPException
 from fastapi.responses import HTMLResponse
+from contextlib import asynccontextmanager
 import uvicorn
 import os, asyncio, base64, hashlib, hmac, json, sqlite3, shutil, sys
 import httpx
@@ -117,6 +117,22 @@ def get_stats():
 init_db()
 
 # ── Node bridge helper ────────────────────────────────────────────────────────
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    print("🚀 Starting Huly-GitLab Sync Service...")
+    print("🔄 Starting background polling task (runs every 5 minutes)...")
+    task = asyncio.create_task(poll_huly_forever())
+    yield
+    # Shutdown
+    print("🛑 Shutting down...")
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        print("✅ Polling task cancelled")
+
+app = FastAPI(lifespan=lifespan)
 
 async def run_bridge(*args, timeout=60) -> tuple[bool, str]:
     """Run huly_api.js with given args. Returns (success, stdout_or_error)."""
@@ -228,9 +244,6 @@ async def create_gitlab_issue(title, description, project_id):
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
-@app.on_event("startup")
-async def startup():
-    asyncio.create_task(poll_huly_forever())
 
 @app.get("/")
 async def root():
