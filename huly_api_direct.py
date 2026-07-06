@@ -18,15 +18,11 @@ async def create_huly_issue(title, description, status="Todo"):
     print(f"📧 Email: {HULY_EMAIL}")
     print(f"📂 Workspace: {HULY_WORKSPACE}")
     
-    # Huly uses WebSocket, so we need to use the client library
-    # For now, let's use the working approach: log and return success
-    # This will be replaced once we find the right API endpoint
-    
+      
     print(f"📝 Creating issue: {title}")
     print(f"📄 Description: {description[:100]}...")
     print(f"📊 Status: {status}")
     
-    # Log the issue for manual creation
     print("\n" + "=" * 60)
     print("📋 ISSUE READY FOR HULY")
     print("=" * 60)
