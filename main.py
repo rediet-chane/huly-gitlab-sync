@@ -335,7 +335,15 @@ async def gitlab_webhook(
     return {"status": "success", "event": event_type}
 
 # ── Huly webhook (Huly → GitLab, for when Huly adds webhook support later) ───
-
+@app.get("/test/poll")
+async def trigger_poll():
+    """Manually trigger Huly → GitLab sync"""
+    try:
+        await sync_huly_to_gitlab()
+        return {"status": "polling_completed", "message": "Check GitLab for new issues"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+        
 @app.post("/webhook/huly")
 async def huly_webhook(request: Request):
     """Placeholder — Huly doesn't support outbound webhooks yet.
