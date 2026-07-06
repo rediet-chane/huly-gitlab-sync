@@ -166,7 +166,13 @@ async def sync_huly_to_gitlab():
         return
 
     try:
-        huly_issues = json.loads(out)
+        data = json.loads(out)
+        # Handle the 'result' wrapper
+        huly_issues = data.get('result', [])
+        if not huly_issues:
+            print("⚠️  No issues found in Huly response")
+            return
+        print(f"📊 Found {len(huly_issues)} issues in Huly")
     except json.JSONDecodeError:
         print(f"⚠️  Could not parse Huly issue list: {out[:100]}")
         return
@@ -177,7 +183,7 @@ async def sync_huly_to_gitlab():
     for issue in huly_issues:
         identifier = issue.get("identifier")
         if not identifier or identifier in known:
-            continue                 # already synced or came from GitLab originally
+            continue
 
         title  = issue.get("title", "(no title)")
         status = issue.get("status", "")
@@ -196,7 +202,7 @@ async def sync_huly_to_gitlab():
             new_count += 1
 
     print(f"✅ Huly poll done — {new_count} new issue(s) pushed to GitLab")
-
+    
 # ── GitLab API ────────────────────────────────────────────────────────────────
 
 async def create_gitlab_issue(title, description, project_id):

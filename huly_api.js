@@ -1,15 +1,9 @@
-// huly_api.js
-//
-// Modes:
-//   node huly_api.js --list-projects         → print all projects + identifiers (run once to find yours)
-//   node huly_api.js --list-issues           → print all issues in HULY_PROJECT_IDENTIFIER as JSON
-//   node huly_api.js "<title>" "<desc>" [status]  → create an issue, print identifier on stdout
-
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
+import { existsSync } from 'fs';  // <-- ADD THIS
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -23,12 +17,17 @@ const HULY_URL                = process.env.HULY_URL || 'https://huly.app';
 const HULY_PROJECT_IDENTIFIER = process.env.HULY_PROJECT_IDENTIFIER;
 
 // Path to the locally-installed MCP server binary.
-// ─── THIS IS THE KEY FIX ───
-// Previously the code used: npx -y @firfi/huly-mcp@latest
-// npx with @latest checks npm on every call even when the package is cached,
-// which caused the 30-second timeout you were seeing.
-// Using the local node_modules path means zero network calls at runtime.
-const HULY_MCP_BIN = resolve(__dirname, 'node_modules', '@firfi', 'huly-mcp', 'dist', 'index.cjs');
+const MCP_PATHS = [
+    resolve(__dirname, 'node_modules', '@firfi', 'huly-mcp', 'dist', 'index.cjs'),
+    resolve(__dirname, 'node_modules', '@firfi', 'huly-mcp', 'dist', 'index.js'),
+];
+let HULY_MCP_BIN = MCP_PATHS.find(p => existsSync(p));  // <-- FIXED
+
+if (!HULY_MCP_BIN) {
+    console.error('❌ Could not find @firfi/huly-mcp in node_modules');
+    console.error('   Run: npm install @firfi/huly-mcp@latest');
+    process.exit(1);
+}
 
 process.on('uncaughtException',    (err) => { console.error('❌ Uncaught:', err.message); process.exit(1); });
 process.on('unhandledRejection', (reason) => { console.error('❌ Unhandled:', reason);    process.exit(1); });
@@ -86,7 +85,6 @@ async function listIssues() {
             arguments: { project: HULY_PROJECT_IDENTIFIER },
         });
         if (result.isError) { console.error('❌', firstText(result)); process.exit(1); }
-        // Output clean JSON to stdout — main.py reads this
         const issues = result.structuredContent ?? JSON.parse(firstText(result) || '[]');
         console.log(JSON.stringify(issues));
     });
@@ -109,7 +107,7 @@ async function createIssue(title, description, status) {
         if (result.isError) { console.error('❌ Huly rejected the issue:', firstText(result)); process.exit(1); }
 
         const identifier = result.structuredContent?.identifier ?? firstText(result);
-        console.log(identifier);   // stdout → main.py reads this back
+        console.log(identifier);
         console.error(`✅ Created: ${identifier}`);
     });
 }
