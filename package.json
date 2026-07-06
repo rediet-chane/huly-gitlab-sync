@@ -5,11 +5,12 @@
   "type": "module",
   "main": "huly_api.js",
   "scripts": {
-    "test": "node huly_api.js 'Test' 'Testing'",
+    "setup": "node huly_api.js --list-projects",
     "start": "python main.py"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0",
-    "dotenv": "^16.4.5"
+    "@firfi/huly-mcp": "^0.44.3",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "dotenv": "^16.6.1"
   }
 }
