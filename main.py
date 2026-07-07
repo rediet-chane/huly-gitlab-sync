@@ -173,7 +173,6 @@ async def poll_huly_forever():
 
 async def sync_huly_to_gitlab():
     if not HULY_READY or not GITLAB_API_TOKEN or not GITLAB_PROJECT_ID:
-        print(f"⚠️  Sync skipped - HULY_READY={HULY_READY}, GITLAB_API_TOKEN={bool(GITLAB_API_TOKEN)}, GITLAB_PROJECT_ID={GITLAB_PROJECT_ID}")
         return
 
     print("🔄 Polling Huly for new issues...")
@@ -182,8 +181,6 @@ async def sync_huly_to_gitlab():
         print(f"⚠️  Huly list failed: {out[:200]}")
         return
 
-    print(f"📥 Bridge output length: {len(out)}")
-
     try:
         data = json.loads(out)
         huly_issues = data.get('result', [])
@@ -191,35 +188,25 @@ async def sync_huly_to_gitlab():
             print("⚠️  No issues found in Huly response")
             return
         print(f"📊 Found {len(huly_issues)} issues in Huly")
-    except json.JSONDecodeError as e:
-        print(f"⚠️  Could not parse Huly issue list: {e}")
-        print(f"⚠️  First 200 chars: {out[:200]}")
+    except json.JSONDecodeError:
+        print(f"⚠️  Could not parse Huly issue list: {out[:100]}")
         return
 
     known = get_known_huly_identifiers()
     print(f"📊 Known identifiers in DB: {len(known)}")
-    if known:
-        print(f"   First 5 known: {list(known)[:5]}")
-
     new_count = 0
 
     for issue in huly_issues:
         identifier = issue.get("identifier")
+        if not identifier or identifier in known:
+            continue
+
+        # Check if this issue already exists in GitLab by title
         title = issue.get("title", "(no title)")
         status = issue.get("status", "")
-
-        if not identifier:
-            print(f"⏭️  Skipping issue with no identifier: {title}")
-            continue
-
-        if identifier in known:
-            print(f"⏭️  Already known: {identifier} - {title}")
-            continue
-
-        print(f"🔄 **NEW ISSUE FOUND!** → GitLab: {identifier} — {title}")
-
         desc = f"Synced from Huly\n\n**Huly ID**: {identifier}\n**Status**: {status}"
 
+        print(f"🔄 New Huly issue → GitLab: {identifier} — {title}")
         success = await create_gitlab_issue(title, desc, GITLAB_PROJECT_ID)
         if success:
             save_issue(
@@ -230,12 +217,9 @@ async def sync_huly_to_gitlab():
                 huly_identifier=identifier, source="huly",
             )
             new_count += 1
-            print(f"✅ Saved to database: {identifier}")
-        else:
-            print(f"❌ Failed to create GitLab issue for {identifier}")
 
     print(f"✅ Huly poll done — {new_count} new issue(s) pushed to GitLab")
-    
+
 # ── GitLab API ────────────────────────────────────────────────────────────────
 
 async def create_gitlab_issue(title, description, project_id):
@@ -260,7 +244,10 @@ async def create_gitlab_issue(title, description, project_id):
     return False
 
 # ── Routes ────────────────────────────────────────────────────────────────────
-
+@app.get("/stats")
+async def get_stats_endpoint():
+    """Get current statistics"""
+    return get_stats()
 
 @app.get("/")
 async def root():
