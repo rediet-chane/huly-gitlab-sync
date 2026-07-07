@@ -1,26 +1,26 @@
+# main.py - Complete Working Version with Loop Prevention
 from fastapi import FastAPI, Request, Header, HTTPException
 from fastapi.responses import HTMLResponse
 from contextlib import asynccontextmanager
 import uvicorn
-import os, asyncio, base64, hashlib, hmac, json, sqlite3, shutil, sys
+import os, asyncio, base64, hashlib, hmac, json, sqlite3, shutil, sys, re
 import httpx
 from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
-app = FastAPI()
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-GITLAB_API_URL       = os.getenv("GITLAB_API_URL", "https://gitlab.com/api/v4")
-GITLAB_API_TOKEN     = os.getenv("GITLAB_API_TOKEN")
-GITLAB_PROJECT_ID    = os.getenv("GITLAB_PROJECT_ID")   # e.g. 83669199
+GITLAB_API_URL          = os.getenv("GITLAB_API_URL", "https://gitlab.com/api/v4")
+GITLAB_API_TOKEN        = os.getenv("GITLAB_API_TOKEN")
+GITLAB_PROJECT_ID       = os.getenv("GITLAB_PROJECT_ID")
 
-HULY_URL             = os.getenv("HULY_URL", "https://huly.app")
-HULY_WORKSPACE       = os.getenv("HULY_WORKSPACE")
-HULY_EMAIL           = os.getenv("HULY_EMAIL")
-HULY_PASSWORD        = os.getenv("HULY_PASSWORD")
+HULY_URL                = os.getenv("HULY_URL", "https://huly.app")
+HULY_WORKSPACE          = os.getenv("HULY_WORKSPACE")
+HULY_EMAIL              = os.getenv("HULY_EMAIL")
+HULY_PASSWORD           = os.getenv("HULY_PASSWORD")
 HULY_PROJECT_IDENTIFIER = os.getenv("HULY_PROJECT_IDENTIFIER")
 
 HULY_READY = bool(HULY_EMAIL and HULY_PASSWORD and HULY_WORKSPACE and HULY_PROJECT_IDENTIFIER)
@@ -30,8 +30,12 @@ NODE_CMD = shutil.which("node.exe" if sys.platform == "win32" else "node") or "n
 
 # ── Database ──────────────────────────────────────────────────────────────────
 
+# Use a persistent path on Render, otherwise local
+_RENDER_DATA = Path("/var/data")
+DB_PATH = str(_RENDER_DATA / "webhooks.db") if _RENDER_DATA.exists() else "webhooks.db"
+
 def init_db():
-    conn = sqlite3.connect('webhooks.db')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS issues (
         id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -48,19 +52,18 @@ def init_db():
         huly_identifier  TEXT,
         source           TEXT DEFAULT "gitlab"
     )''')
-    # Migrate older databases that don't have the new columns yet
-    for col, default in [("huly_identifier", None), ("source", '"gitlab"')]:
+    for col in ["huly_identifier", "source"]:
         try:
-            c.execute(f'ALTER TABLE issues ADD COLUMN {col} TEXT DEFAULT {default or "NULL"}')
+            c.execute(f'ALTER TABLE issues ADD COLUMN {col} TEXT')
         except Exception:
-            pass  # column already exists
+            pass
     conn.commit()
     conn.close()
-    print("✅ Database ready")
+    print(f"✅ Database ready at: {DB_PATH}")
 
 def save_issue(iid, title, description, state, author, project, url,
                created_at, synced=False, huly_identifier=None, source="gitlab"):
-    conn = sqlite3.connect('webhooks.db')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('''INSERT INTO issues
                  (iid,title,description,state,author,project,url,
@@ -73,15 +76,23 @@ def save_issue(iid, title, description, state, author, project, url,
     conn.close()
 
 def mark_synced(iid, huly_identifier):
-    conn = sqlite3.connect('webhooks.db')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('UPDATE issues SET synced_to_huly="yes", huly_identifier=? WHERE iid=?',
               (huly_identifier, iid))
     conn.commit()
     conn.close()
 
+def iid_exists(iid: str) -> bool:
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT 1 FROM issues WHERE iid=? LIMIT 1', (iid,))
+    found = c.fetchone() is not None
+    conn.close()
+    return found
+
 def get_known_huly_identifiers():
-    conn = sqlite3.connect('webhooks.db')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('SELECT huly_identifier FROM issues WHERE huly_identifier IS NOT NULL')
     result = {row[0] for row in c.fetchall()}
@@ -89,7 +100,7 @@ def get_known_huly_identifiers():
     return result
 
 def get_issues(limit=100):
-    conn = sqlite3.connect('webhooks.db')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('''SELECT iid,title,description,state,author,project,url,
                         received_at,synced_to_huly,huly_identifier,source
@@ -102,7 +113,7 @@ def get_issues(limit=100):
     )) for row in rows]
 
 def get_stats():
-    conn = sqlite3.connect('webhooks.db')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     def q(sql): c.execute(sql); return c.fetchone()[0]
     stats = {
@@ -116,26 +127,25 @@ def get_stats():
 
 init_db()
 
-# ── Node bridge helper ────────────────────────────────────────────────────────
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Startup
-    print("🚀 Starting Huly-GitLab Sync Service...")
-    print("🔄 Starting background polling task (runs every 5 minutes)...")
-    task = asyncio.create_task(poll_huly_forever())
-    yield
-    # Shutdown
-    print("🛑 Shutting down...")
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        print("✅ Polling task cancelled")
+# ── Loop prevention ───────────────────────────────────────────────────────────
 
-app = FastAPI(lifespan=lifespan)
+def make_gitlab_desc_from_huly(title, identifier, status):
+    return (
+        f"Synced from Huly\n\n"
+        f"**Huly ID**: {identifier}\n"
+        f"**Status**: {status}\n\n"
+        f"<!-- huly-sync:{identifier} -->"
+    )
+
+def extract_huly_sync_id(description: str):
+    if not description:
+        return None
+    m = re.search(r'<!-- huly-sync:([A-Z0-9\-]+) -->', description)
+    return m.group(1) if m else None
+
+# ── Node bridge helper ────────────────────────────────────────────────────────
 
 async def run_bridge(*args, timeout=60) -> tuple[bool, str]:
-    """Run huly_api.js with given args. Returns (success, stdout_or_error)."""
     if not HULY_READY:
         return False, "Huly not configured"
     if not BRIDGE_SCRIPT.exists():
@@ -159,54 +169,51 @@ async def run_bridge(*args, timeout=60) -> tuple[bool, str]:
     out = stdout.decode(errors="replace").strip()
     return proc.returncode == 0, out
 
-# ── Huly → GitLab polling (bidirectional sync) ────────────────────────────────
+# ── Huly → GitLab polling ────────────────────────────────────────────────────
 
 async def poll_huly_forever():
-    """Background task: every 5 minutes, pull new Huly issues into GitLab."""
-    await asyncio.sleep(30)          # let the server fully start first
+    await asyncio.sleep(30)
     while True:
         try:
             await sync_huly_to_gitlab()
         except Exception as e:
             print(f"❌ Huly poll error: {e}")
-        await asyncio.sleep(300)     # 5 minutes
+        await asyncio.sleep(300)
 
 async def sync_huly_to_gitlab():
     if not HULY_READY or not GITLAB_API_TOKEN or not GITLAB_PROJECT_ID:
+        print(f"⚠️  Poll skipped — GITLAB_PROJECT_ID={'set' if GITLAB_PROJECT_ID else 'MISSING'}")
         return
 
     print("🔄 Polling Huly for new issues...")
     ok, out = await run_bridge("--list-issues", timeout=60)
     if not ok:
-        print(f"⚠️  Huly list failed: {out[:200]}")
+        print(f"⚠️  list-issues failed: {out[:200]}")
         return
 
     try:
-        data = json.loads(out)
-        huly_issues = data.get('result', [])
-        if not huly_issues:
-            print("⚠️  No issues found in Huly response")
-            return
-        print(f"📊 Found {len(huly_issues)} issues in Huly")
+        huly_issues = json.loads(out)
+        if isinstance(huly_issues, dict):
+            huly_issues = huly_issues.get("result", [])
     except json.JSONDecodeError:
         print(f"⚠️  Could not parse Huly issue list: {out[:100]}")
         return
 
     known = get_known_huly_identifiers()
-    print(f"📊 Known identifiers in DB: {len(known)}")
-    new_count = 0
+    print(f"📊 Huly: {len(huly_issues)} issues | DB knows: {len(known)} identifiers")
 
+    new_count = 0
     for issue in huly_issues:
         identifier = issue.get("identifier")
         if not identifier or identifier in known:
             continue
 
-        # Check if this issue already exists in GitLab by title
-        title = issue.get("title", "(no title)")
+        title  = issue.get("title", "(no title)")
         status = issue.get("status", "")
-        desc = f"Synced from Huly\n\n**Huly ID**: {identifier}\n**Status**: {status}"
 
         print(f"🔄 New Huly issue → GitLab: {identifier} — {title}")
+        desc = make_gitlab_desc_from_huly(title, identifier, status)
+
         success = await create_gitlab_issue(title, desc, GITLAB_PROJECT_ID)
         if success:
             save_issue(
@@ -218,21 +225,19 @@ async def sync_huly_to_gitlab():
             )
             new_count += 1
 
-    print(f"✅ Huly poll done — {new_count} new issue(s) pushed to GitLab")
+    print(f"✅ Poll done — {new_count} new issue(s) sent to GitLab")
 
 # ── GitLab API ────────────────────────────────────────────────────────────────
 
 async def create_gitlab_issue(title, description, project_id):
     headers = {"Authorization": f"Bearer {GITLAB_API_TOKEN}", "Content-Type": "application/json"}
-    data = {
-        "title": title,
-        "description": f"{description}\n\n---\n**Source**: Huly\n**Synced**: {datetime.now().isoformat()}",
-    }
     async with httpx.AsyncClient() as client:
         try:
             r = await client.post(
                 f"{GITLAB_API_URL}/projects/{project_id}/issues",
-                headers=headers, json=data, timeout=10,
+                headers=headers,
+                json={"title": title, "description": description},
+                timeout=10,
             )
             if r.status_code == 201:
                 issue = r.json()
@@ -243,11 +248,22 @@ async def create_gitlab_issue(title, description, project_id):
             print(f"❌ GitLab error: {e}")
     return False
 
-# ── Routes ────────────────────────────────────────────────────────────────────
-@app.get("/stats")
-async def get_stats_endpoint():
-    """Get current statistics"""
-    return get_stats()
+# ── FastAPI app ───────────────────────────────────────────────────────────────
+
+@asynccontextmanager
+async def lifespan(app):
+    print("🚀 Starting Huly-GitLab Sync Service...")
+    print("🔄 Starting background polling task (runs every 5 minutes)...")
+    task = asyncio.create_task(poll_huly_forever())
+    yield
+    print("🛑 Shutting down...")
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        print("✅ Polling task cancelled")
+
+app = FastAPI(lifespan=lifespan)
 
 @app.get("/")
 async def root():
@@ -257,20 +273,30 @@ async def root():
         "gitlab_configured": bool(GITLAB_API_TOKEN),
         "gitlab_project_id": GITLAB_PROJECT_ID,
         "huly_project": HULY_PROJECT_IDENTIFIER,
-        "bridge_exists": BRIDGE_SCRIPT.exists(),
+        "db_path": DB_PATH,
         "stats": get_stats(),
     }
+
+@app.get("/stats")
+async def get_stats_endpoint():
+    """Get current statistics"""
+    return get_stats()
 
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard():
     try:
         return (Path(__file__).parent / "dashboard.html").read_text(encoding="utf-8")
     except FileNotFoundError:
-        return "<p>dashboard.html not found. Open <a href='/api/webhooks'>/api/webhooks</a> instead.</p>"
+        return "<p>dashboard.html not found</p>"
 
 @app.get("/api/webhooks")
 async def api_webhooks():
     return {"webhooks": get_issues(100), "stats": get_stats()}
+
+@app.get("/test/poll")
+async def trigger_poll():
+    await sync_huly_to_gitlab()
+    return {"status": "done", "stats": get_stats()}
 
 @app.get("/test/gitlab")
 async def test_gitlab():
@@ -284,20 +310,15 @@ async def test_gitlab():
             if r.status_code == 200:
                 return {"status": "connected",
                         "projects": [{"id": p["id"], "name": p["name"]} for p in r.json()]}
-            return {"status": "error", "code": r.status_code}
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
 @app.get("/test/huly")
 async def test_huly():
-    return {
-        "huly_ready": HULY_READY,
-        "workspace": HULY_WORKSPACE,
-        "project": HULY_PROJECT_IDENTIFIER,
-        "bridge_exists": BRIDGE_SCRIPT.exists(),
-    }
+    return {"huly_ready": HULY_READY, "workspace": HULY_WORKSPACE,
+            "project": HULY_PROJECT_IDENTIFIER, "bridge_exists": BRIDGE_SCRIPT.exists()}
 
-# ── GitLab webhook (GitLab → Huly) ───────────────────────────────────────────
+# ── GitLab webhook ────────────────────────────────────────────────────────────
 
 @app.post("/webhook/gitlab")
 async def gitlab_webhook(
@@ -316,9 +337,7 @@ async def gitlab_webhook(
         message = f"{webhook_id}.{webhook_timestamp}.{raw_body.decode()}".encode()
         digest  = hmac.new(raw_key, message, hashlib.sha256).digest()
         expected = "v1," + base64.b64encode(digest).decode()
-        # GitLab may send multiple signatures space-separated
-        verified = any(hmac.compare_digest(expected, sig)
-                       for sig in webhook_signature.split())
+        verified = any(hmac.compare_digest(expected, sig) for sig in webhook_signature.split())
         print("✅ HMAC verified!" if verified else "❌ HMAC mismatch")
     else:
         secret = os.getenv("GITLAB_WEBHOOK_SECRET")
@@ -327,7 +346,7 @@ async def gitlab_webhook(
             print("✅ Secret token verified!" if verified else "❌ Secret token mismatch")
 
     if not verified:
-        raise HTTPException(status_code=401, detail="Invalid or missing credentials")
+        raise HTTPException(status_code=401, detail="Invalid credentials")
 
     payload    = json.loads(raw_body)
     event_type = payload.get("object_kind")
@@ -338,25 +357,7 @@ async def gitlab_webhook(
 
     return {"status": "success", "event": event_type}
 
-# ── Huly webhook (Huly → GitLab, for when Huly adds webhook support later) ───
-@app.get("/test/poll")
-async def trigger_poll():
-    """Manually trigger Huly → GitLab sync"""
-    try:
-        await sync_huly_to_gitlab()
-        return {"status": "polling_completed", "message": "Check GitLab for new issues"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-@app.post("/webhook/huly")
-async def huly_webhook(request: Request):
-    """Placeholder — Huly doesn't support outbound webhooks yet.
-    Bidirectional sync currently runs via polling (poll_huly_forever)."""
-    payload = await request.json()
-    print(f"📨 Huly webhook (unexpected): {payload}")
-    return {"status": "received"}
-
-# ── Issue processing ─────────────────────────────────────────────────────────
+# ── Issue processing ──────────────────────────────────────────────────────────
 
 async def process_gitlab_issue(payload: dict):
     issue_data   = payload.get("object_attributes", {})
@@ -364,18 +365,31 @@ async def process_gitlab_issue(payload: dict):
     if not issue_data:
         return
 
-    iid     = issue_data.get("iid")
-    title   = issue_data.get("title")
-    desc    = issue_data.get("description", "")
-    state   = issue_data.get("state")
+    iid     = str(issue_data.get("iid", ""))
+    title   = issue_data.get("title", "")
+    desc    = issue_data.get("description", "") or ""
+    state   = issue_data.get("state", "opened")
     author  = issue_data.get("author", {}).get("username", "unknown")
     project = project_data.get("name", "unknown")
     url     = issue_data.get("url")
     created = issue_data.get("created_at")
 
-    print(f"📝 #{iid} — {title} ({state}) by {author}")
+    # ── Loop prevention ──────────────────────────────────────────────────────
+    # If this GitLab issue was created by our own Huly sync, skip Huly sync
+    huly_id_from_marker = extract_huly_sync_id(desc)
+    if huly_id_from_marker:
+        if not iid_exists(iid):
+            print(f"⏭️  #{iid} came from Huly ({huly_id_from_marker}) — recording, skipping Huly sync")
+            save_issue(iid, title, desc, state, author, project, url, created,
+                       synced=True, huly_identifier=huly_id_from_marker, source="huly")
+        return
 
-    # Save to DB immediately (not yet synced to Huly)
+    # Deduplicate: if we already have this GitLab issue in the DB, skip
+    if iid_exists(iid):
+        print(f"⏭️  #{iid} already in DB — skipping")
+        return
+
+    print(f"📝 #{iid} — {title} ({state}) by {author}")
     save_issue(iid, title, desc, state, author, project, url, created, synced=False)
 
     status_map  = {"opened": "Todo", "closed": "Done", "reopened": "Todo"}
@@ -383,22 +397,21 @@ async def process_gitlab_issue(payload: dict):
     huly_desc   = f"{desc}\n\n---\n**Source**: GitLab #{iid}\n**URL**: {url}"
 
     ok, result = await run_bridge(title, huly_desc, huly_status, timeout=180)
-
     if ok:
         print(f"✅ Created in Huly: {result}")
-        mark_synced(iid, result)  # result is the Huly identifier e.g. "HULY-7"
+        mark_synced(iid, result)
     else:
-        print(f"⚠️  Huly failed ({result}) — issue saved to DB, will show in dashboard")
+        print(f"⚠️  Huly failed ({result})")
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("🚀 Huly-GitLab Sync Service")
-    print(f"   Huly ready:      {'✅' if HULY_READY else '❌ (check .env)'}")
-    print(f"   GitLab:          {'✅' if GITLAB_API_TOKEN else '❌'}")
-    print(f"   GitLab project:  {GITLAB_PROJECT_ID or '⚠️  GITLAB_PROJECT_ID not set'}")
-    print(f"   Huly project:    {HULY_PROJECT_IDENTIFIER or '⚠️  not set'}")
-    print(f"   Dashboard:       http://localhost:8000/dashboard")
+    print(f"   Huly ready:     {'✅' if HULY_READY else '❌'}")
+    print(f"   GitLab:         {'✅' if GITLAB_API_TOKEN else '❌'}")
+    print(f"   GitLab project: {GITLAB_PROJECT_ID or '⚠️  not set'}")
+    print(f"   Huly project:   {HULY_PROJECT_IDENTIFIER or '⚠️  not set'}")
+    print(f"   DB:             {DB_PATH}")
+    print(f"   Dashboard:      http://localhost:8000/dashboard")
     print("=" * 60)
     uvicorn.run(app, host="0.0.0.0", port=8000)
