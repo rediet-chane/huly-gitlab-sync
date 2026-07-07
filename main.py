@@ -1,4 +1,4 @@
-# main.py - Complete Working Version with Loop Prevention
+# main.py - Complete Working Version with All Fixes
 from fastapi import FastAPI, Request, Header, HTTPException
 from fastapi.responses import HTMLResponse
 from contextlib import asynccontextmanager
@@ -50,9 +50,10 @@ def init_db():
         received_at      TEXT,
         synced_to_huly   TEXT DEFAULT "no",
         huly_identifier  TEXT,
-        source           TEXT DEFAULT "gitlab"
+        source           TEXT DEFAULT "gitlab",
+        labels           TEXT
     )''')
-    for col in ["huly_identifier", "source"]:
+    for col in ["huly_identifier", "source", "labels"]:
         try:
             c.execute(f'ALTER TABLE issues ADD COLUMN {col} TEXT')
         except Exception:
@@ -62,16 +63,16 @@ def init_db():
     print(f"✅ Database ready at: {DB_PATH}")
 
 def save_issue(iid, title, description, state, author, project, url,
-               created_at, synced=False, huly_identifier=None, source="gitlab"):
+               created_at, synced=False, huly_identifier=None, source="gitlab", labels=None):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('''INSERT INTO issues
                  (iid,title,description,state,author,project,url,
-                  created_at,received_at,synced_to_huly,huly_identifier,source)
-                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
+                  created_at,received_at,synced_to_huly,huly_identifier,source,labels)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
               (iid, title, description, state, author, project, url, created_at,
                datetime.now().isoformat(), "yes" if synced else "no",
-               huly_identifier, source))
+               huly_identifier, source, labels))
     conn.commit()
     conn.close()
 
@@ -103,13 +104,13 @@ def get_issues(limit=100):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('''SELECT iid,title,description,state,author,project,url,
-                        received_at,synced_to_huly,huly_identifier,source
+                        received_at,synced_to_huly,huly_identifier,source,labels
                  FROM issues ORDER BY id DESC LIMIT ?''', (limit,))
     rows = c.fetchall()
     conn.close()
     return [dict(zip(
         ['iid','title','description','state','author','project','url',
-         'received_at','synced_to_huly','huly_identifier','source'], row
+         'received_at','synced_to_huly','huly_identifier','source','labels'], row
     )) for row in rows]
 
 def get_stats():
@@ -129,11 +130,13 @@ init_db()
 
 # ── Loop prevention ───────────────────────────────────────────────────────────
 
-def make_gitlab_desc_from_huly(title, identifier, status):
+def make_gitlab_desc_from_huly(title, identifier, status, labels=None):
+    labels_section = f"\n\n**Labels**: {labels}" if labels else ""
     return (
         f"Synced from Huly\n\n"
         f"**Huly ID**: {identifier}\n"
-        f"**Status**: {status}\n\n"
+        f"**Status**: {status}\n"
+        f"{labels_section}\n"
         f"<!-- huly-sync:{identifier} -->"
     )
 
@@ -208,11 +211,16 @@ async def sync_huly_to_gitlab():
         if not identifier or identifier in known:
             continue
 
-        title  = issue.get("title", "(no title)")
+        title = issue.get("title", "(no title)")
         status = issue.get("status", "")
+        labels = issue.get("labels", [])
+        if isinstance(labels, list):
+            labels_str = ", ".join(labels) if labels else ""
+        else:
+            labels_str = str(labels) if labels else ""
 
         print(f"🔄 New Huly issue → GitLab: {identifier} — {title}")
-        desc = make_gitlab_desc_from_huly(title, identifier, status)
+        desc = make_gitlab_desc_from_huly(title, identifier, status, labels_str)
 
         success = await create_gitlab_issue(title, desc, GITLAB_PROJECT_ID)
         if success:
@@ -222,6 +230,7 @@ async def sync_huly_to_gitlab():
                 url=f"{HULY_URL}/workbench/{HULY_WORKSPACE}",
                 created_at=None, synced=True,
                 huly_identifier=identifier, source="huly",
+                labels=labels_str,
             )
             new_count += 1
 
@@ -318,6 +327,47 @@ async def test_huly():
     return {"huly_ready": HULY_READY, "workspace": HULY_WORKSPACE,
             "project": HULY_PROJECT_IDENTIFIER, "bridge_exists": BRIDGE_SCRIPT.exists()}
 
+# ── Fix Duplicates Endpoint ──────────────────────────────────────────────────
+
+@app.get("/fix-duplicates")
+async def fix_duplicates():
+    """Clean up duplicate issues in the database"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        # Find duplicates - issues with the same huly_identifier
+        c.execute('''
+            SELECT huly_identifier, COUNT(*) as cnt 
+            FROM issues 
+            WHERE huly_identifier IS NOT NULL 
+            GROUP BY huly_identifier 
+            HAVING cnt > 1
+        ''')
+        duplicates = c.fetchall()
+        
+        deleted = 0
+        for huly_id, count in duplicates:
+            # Keep the one with source='huly', delete the others
+            c.execute('''
+                DELETE FROM issues 
+                WHERE huly_identifier = ? 
+                AND source = 'gitlab'
+            ''', (huly_id,))
+            deleted += c.rowcount
+        
+        conn.commit()
+        conn.close()
+        
+        return {
+            "status": "success",
+            "duplicate_groups": len(duplicates),
+            "deleted": deleted,
+            "message": f"Deleted {deleted} duplicate entries"
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 # ── GitLab webhook ────────────────────────────────────────────────────────────
 
 @app.post("/webhook/gitlab")
@@ -373,15 +423,32 @@ async def process_gitlab_issue(payload: dict):
     project = project_data.get("name", "unknown")
     url     = issue_data.get("url")
     created = issue_data.get("created_at")
+    
+    # Extract labels from GitLab
+    labels = issue_data.get("labels", [])
+    if isinstance(labels, list):
+        labels_str = ", ".join(labels) if labels else ""
+    else:
+        labels_str = str(labels) if labels else ""
 
-    # ── Loop prevention ──────────────────────────────────────────────────────
-    # If this GitLab issue was created by our own Huly sync, skip Huly sync
+    # ── Check if this is from our Huly sync ──────────────────────────────
     huly_id_from_marker = extract_huly_sync_id(desc)
     if huly_id_from_marker:
+        # Check if this Huly ID is already in the database
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('SELECT 1 FROM issues WHERE huly_identifier = ?', (huly_id_from_marker,))
+        existing = c.fetchone() is not None
+        conn.close()
+        
+        if existing:
+            print(f"⏭️  #{iid} is a duplicate of {huly_id_from_marker} — skipping")
+            return
+        
         if not iid_exists(iid):
             print(f"⏭️  #{iid} came from Huly ({huly_id_from_marker}) — recording, skipping Huly sync")
             save_issue(iid, title, desc, state, author, project, url, created,
-                       synced=True, huly_identifier=huly_id_from_marker, source="huly")
+                       synced=True, huly_identifier=huly_id_from_marker, source="huly", labels=labels_str)
         return
 
     # Deduplicate: if we already have this GitLab issue in the DB, skip
@@ -390,11 +457,14 @@ async def process_gitlab_issue(payload: dict):
         return
 
     print(f"📝 #{iid} — {title} ({state}) by {author}")
-    save_issue(iid, title, desc, state, author, project, url, created, synced=False)
+    save_issue(iid, title, desc, state, author, project, url, created, synced=False, labels=labels_str)
 
     status_map  = {"opened": "Todo", "closed": "Done", "reopened": "Todo"}
     huly_status = status_map.get(state, "Todo")
-    huly_desc   = f"{desc}\n\n---\n**Source**: GitLab #{iid}\n**URL**: {url}"
+    
+    # Include labels in the Huly description
+    labels_section = f"\n\n**Labels**: {labels_str}" if labels_str else ""
+    huly_desc = f"{desc}{labels_section}\n\n---\n**Source**: GitLab #{iid}\n**URL**: {url}"
 
     ok, result = await run_bridge(title, huly_desc, huly_status, timeout=180)
     if ok:
