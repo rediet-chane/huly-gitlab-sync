@@ -67,6 +67,7 @@ def init_db():
         except Exception:
             pass
 
+    # Fix bad data - clean up any existing bad huly_identifiers
     c.execute("SELECT id, huly_identifier FROM issues WHERE huly_identifier LIKE '{%'")
     bad_rows = c.fetchall()
     fixed = 0
@@ -263,21 +264,27 @@ async def sync_huly_to_gitlab():
     new_count = 0
     for issue in huly_issues:
         identifier = issue.get("identifier")
-        if not identifier or identifier in known:
+        if not identifier:
             continue
-
+            
         title = issue.get("title", "(no title)")
         status = issue.get("status", "")
         
-        # ─── CHECK IF ALREADY EXISTS IN GITLAB ─────────────────────────────
+        # ─── CHECK IF ALREADY IN DB OR GITLAB ──────────────────────────────
+        if identifier in known:
+            print(f"⏭️  Already known: {identifier}")
+            continue
+            
         if await gitlab_issue_exists(title):
             print(f"⏭️  Issue already exists in GitLab: {title}")
-            conn = sqlite3.connect(DB_PATH)
-            c = conn.cursor()
-            c.execute('INSERT OR IGNORE INTO issues (huly_identifier, title, source) VALUES (?, ?, "huly")',
-                      (identifier, title))
-            conn.commit()
-            conn.close()
+            # Add to known so we don't check again
+            save_issue(
+                iid=identifier, title=title, description="",
+                state=status, author="huly", project=HULY_PROJECT_IDENTIFIER,
+                url=f"{HULY_URL}/workbench/{HULY_WORKSPACE}",
+                created_at=None, synced=True,
+                huly_identifier=identifier, source="huly",
+            )
             continue
 
         desc = make_gitlab_desc_from_huly(identifier, status)
