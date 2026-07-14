@@ -16,7 +16,6 @@ const HULY_WORKSPACE          = process.env.HULY_WORKSPACE;
 const HULY_URL                = process.env.HULY_URL || 'https://huly.app';
 const HULY_PROJECT_IDENTIFIER = process.env.HULY_PROJECT_IDENTIFIER;
 
-// Path to the locally-installed MCP server binary.
 const MCP_PATHS = [
     resolve(__dirname, 'node_modules', '@firfi', 'huly-mcp', 'dist', 'index.cjs'),
     resolve(__dirname, 'node_modules', '@firfi', 'huly-mcp', 'dist', 'index.js'),
@@ -31,8 +30,6 @@ if (!HULY_MCP_BIN) {
 
 process.on('uncaughtException',    (err) => { console.error('❌ Uncaught:', err.message); process.exit(1); });
 process.on('unhandledRejection', (reason) => { console.error('❌ Unhandled:', reason);    process.exit(1); });
-
-// ─── MCP client wrapper ───────────────────────────────────────────────────────
 
 async function withHulyClient(fn) {
     if (!HULY_EMAIL || !HULY_PASSWORD || !HULY_WORKSPACE) {
@@ -64,7 +61,6 @@ function firstText(result) {
     return result.content?.find((c) => c.type === 'text')?.text ?? '';
 }
 
-// ─── Commands ─────────────────────────────────────────────────────────────────
 
 async function listProjects() {
     await withHulyClient(async (client) => {
@@ -111,8 +107,6 @@ async function createIssue(title, description, status) {
         console.error(`✅ Created: ${identifier}`);
     });
 }
-
-// ─── Main ─────────────────────────────────────────────────────────────────────
 
 const args = process.argv.slice(2);
 const run = args[0] === '--list-projects' ? listProjects

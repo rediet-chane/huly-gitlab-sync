@@ -1,4 +1,3 @@
-# main.py - Complete Working Version with All Fixes
 from fastapi import FastAPI, Request, Header, HTTPException
 from fastapi.responses import HTMLResponse
 from contextlib import asynccontextmanager
@@ -10,8 +9,6 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
-
-# ── Config ────────────────────────────────────────────────────────────────────
 
 GITLAB_API_URL          = os.getenv("GITLAB_API_URL", "https://gitlab.com/api/v4")
 GITLAB_API_TOKEN        = os.getenv("GITLAB_API_TOKEN")
@@ -28,9 +25,6 @@ HULY_READY = bool(HULY_EMAIL and HULY_PASSWORD and HULY_WORKSPACE and HULY_PROJE
 BRIDGE_SCRIPT = Path(__file__).resolve().parent / "huly_api.js"
 NODE_CMD = shutil.which("node.exe" if sys.platform == "win32" else "node") or "node"
 
-# ── Database ──────────────────────────────────────────────────────────────────
-
-# Use a persistent path on Render, otherwise local
 _RENDER_DATA = Path("/var/data")
 DB_PATH = str(_RENDER_DATA / "webhooks.db") if _RENDER_DATA.exists() else "webhooks.db"
 
@@ -128,8 +122,6 @@ def get_stats():
 
 init_db()
 
-# ── Loop prevention ───────────────────────────────────────────────────────────
-
 def make_gitlab_desc_from_huly(title, identifier, status, labels=None):
     labels_section = f"\n\n**Labels**: {labels}" if labels else ""
     return (
@@ -145,8 +137,6 @@ def extract_huly_sync_id(description: str):
         return None
     m = re.search(r'<!-- huly-sync:([A-Z0-9\-]+) -->', description)
     return m.group(1) if m else None
-
-# ── Node bridge helper ────────────────────────────────────────────────────────
 
 async def run_bridge(*args, timeout=60) -> tuple[bool, str]:
     if not HULY_READY:
@@ -171,8 +161,6 @@ async def run_bridge(*args, timeout=60) -> tuple[bool, str]:
 
     out = stdout.decode(errors="replace").strip()
     return proc.returncode == 0, out
-
-# ── Huly → GitLab polling ────────────────────────────────────────────────────
 
 async def poll_huly_forever():
     await asyncio.sleep(30)
@@ -236,8 +224,6 @@ async def sync_huly_to_gitlab():
 
     print(f"✅ Poll done — {new_count} new issue(s) sent to GitLab")
 
-# ── GitLab API ────────────────────────────────────────────────────────────────
-
 async def create_gitlab_issue(title, description, project_id):
     headers = {"Authorization": f"Bearer {GITLAB_API_TOKEN}", "Content-Type": "application/json"}
     async with httpx.AsyncClient() as client:
@@ -256,8 +242,6 @@ async def create_gitlab_issue(title, description, project_id):
         except Exception as e:
             print(f"❌ GitLab error: {e}")
     return False
-
-# ── FastAPI app ───────────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app):
@@ -327,8 +311,6 @@ async def test_huly():
     return {"huly_ready": HULY_READY, "workspace": HULY_WORKSPACE,
             "project": HULY_PROJECT_IDENTIFIER, "bridge_exists": BRIDGE_SCRIPT.exists()}
 
-# ── Fix Duplicates Endpoint ──────────────────────────────────────────────────
-
 @app.get("/fix-duplicates")
 async def fix_duplicates():
     """Clean up duplicate issues in the database"""
@@ -336,7 +318,6 @@ async def fix_duplicates():
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         
-        # Find duplicates - issues with the same huly_identifier
         c.execute('''
             SELECT huly_identifier, COUNT(*) as cnt 
             FROM issues 
@@ -367,8 +348,6 @@ async def fix_duplicates():
         }
     except Exception as e:
         return {"status": "error", "message": str(e)}
-
-# ── GitLab webhook ────────────────────────────────────────────────────────────
 
 @app.post("/webhook/gitlab")
 async def gitlab_webhook(
@@ -407,8 +386,6 @@ async def gitlab_webhook(
 
     return {"status": "success", "event": event_type}
 
-# ── Issue processing ──────────────────────────────────────────────────────────
-
 async def process_gitlab_issue(payload: dict):
     issue_data   = payload.get("object_attributes", {})
     project_data = payload.get("project", {})
@@ -424,14 +401,12 @@ async def process_gitlab_issue(payload: dict):
     url     = issue_data.get("url")
     created = issue_data.get("created_at")
     
-    # Extract labels from GitLab
     labels = issue_data.get("labels", [])
     if isinstance(labels, list):
         labels_str = ", ".join(labels) if labels else ""
     else:
         labels_str = str(labels) if labels else ""
 
-    # ── Check if this is from our Huly sync ──────────────────────────────
     huly_id_from_marker = extract_huly_sync_id(desc)
     if huly_id_from_marker:
         # Check if this Huly ID is already in the database
@@ -451,7 +426,6 @@ async def process_gitlab_issue(payload: dict):
                        synced=True, huly_identifier=huly_id_from_marker, source="huly", labels=labels_str)
         return
 
-    # Deduplicate: if we already have this GitLab issue in the DB, skip
     if iid_exists(iid):
         print(f"⏭️  #{iid} already in DB — skipping")
         return
@@ -461,8 +435,7 @@ async def process_gitlab_issue(payload: dict):
 
     status_map  = {"opened": "Todo", "closed": "Done", "reopened": "Todo"}
     huly_status = status_map.get(state, "Todo")
-    
-    # Include labels in the Huly description
+
     labels_section = f"\n\n**Labels**: {labels_str}" if labels_str else ""
     huly_desc = f"{desc}{labels_section}\n\n---\n**Source**: GitLab #{iid}\n**URL**: {url}"
 
@@ -472,8 +445,6 @@ async def process_gitlab_issue(payload: dict):
         mark_synced(iid, result)
     else:
         print(f"⚠️  Huly failed ({result})")
-
-# ── Main ──────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     print("=" * 60)

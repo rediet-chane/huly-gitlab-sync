@@ -1,4 +1,3 @@
-# huly_websocket_working.py - Fixed for your websockets version
 import asyncio
 import websockets
 import json
@@ -25,7 +24,6 @@ async def create_huly_issue_websocket(title, description, status="Todo"):
     print(f"📧 Email: {HULY_EMAIL}")
     
     try:
-        # Try different approaches without timeout parameter
         approaches = [
             ("email_pw", await connect_with_email_pw(ws_url, HULY_EMAIL, HULY_PASSWORD, HULY_WORKSPACE, title, description, status)),
             ("token_body", await connect_with_token_body(ws_url, HULY_TOKEN, HULY_WORKSPACE, title, description, status)),
@@ -46,11 +44,9 @@ async def create_huly_issue_websocket(title, description, status="Todo"):
 async def connect_with_email_pw(ws_url, email, password, workspace, title, description, status):
     """Connect with email/password"""
     try:
-        # Connect without timeout parameter
         async with websockets.connect(ws_url) as websocket:
             print("✅ Connected with email/password!")
             
-            # Auth with email/password
             auth_msg = {
                 "type": "auth",
                 "email": email,
@@ -66,7 +62,6 @@ async def connect_with_email_pw(ws_url, email, password, workspace, title, descr
             except asyncio.TimeoutError:
                 print("⏰ Auth timeout, continuing...")
             
-            # Create issue
             create_msg = {
                 "type": "create_issue",
                 "workspace": workspace,

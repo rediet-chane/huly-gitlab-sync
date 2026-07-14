@@ -1,4 +1,3 @@
-# src/models.py - Data models
 from typing import Optional, Dict, Any
 from dataclasses import dataclass
 

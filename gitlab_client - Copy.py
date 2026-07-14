@@ -1,4 +1,3 @@
-# src/gitlab_client.py - GitLab API Client
 import httpx
 from typing import Optional, List
 from src.config import settings

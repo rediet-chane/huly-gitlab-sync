@@ -1,4 +1,3 @@
-# huly_api_direct.py - Simple direct API call to Huly
 import httpx
 import asyncio
 import json

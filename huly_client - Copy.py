@@ -1,4 +1,3 @@
-# src/huly_client.py - Huly API Client
 import os
 import json
 import asyncio
@@ -24,11 +23,6 @@ class HulyClient:
             return False
         
         print(f"📤 Creating issue in Huly: {title[:50]}...")
-        
-        # Since Huly's API is limited, this is a placeholder
-        # In practice, you'd use the Huly CLI or WebSocket here
-        
-        # For now, we'll use the CLI approach
         return await self._create_with_cli(title, description, status)
     
     async def _create_with_cli(self, title: str, description: str, status: str) -> bool:

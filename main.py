@@ -1,4 +1,3 @@
-# main.py - Complete Fixed Version with Marker-Based Duplicate Detection
 from fastapi import FastAPI, Request, Header, HTTPException
 from fastapi.responses import HTMLResponse
 from contextlib import asynccontextmanager
@@ -10,8 +9,6 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
-
-# ── Config ────────────────────────────────────────────────────────────────────
 
 GITLAB_API_URL          = os.getenv("GITLAB_API_URL", "https://gitlab.com/api/v4")
 GITLAB_API_TOKEN        = os.getenv("GITLAB_API_TOKEN")
@@ -27,8 +24,6 @@ HULY_READY = bool(HULY_EMAIL and HULY_PASSWORD and HULY_WORKSPACE and HULY_PROJE
 
 BRIDGE_SCRIPT = Path(__file__).resolve().parent / "huly_api.js"
 NODE_CMD = shutil.which("node.exe" if sys.platform == "win32" else "node") or "node"
-
-# ── Database ──────────────────────────────────────────────────────────────────
 
 _RENDER_DATA = Path("/var/data")
 DB_PATH = str(_RENDER_DATA / "webhooks.db") if _RENDER_DATA.exists() else "webhooks.db"
@@ -68,7 +63,6 @@ def init_db():
         except Exception:
             pass
 
-    # Fix bad data - clean up any existing bad huly_identifiers
     c.execute("SELECT id, huly_identifier FROM issues WHERE huly_identifier LIKE '{%'")
     bad_rows = c.fetchall()
     fixed = 0
@@ -161,8 +155,6 @@ def get_stats():
 
 init_db()
 
-# ── Loop prevention ───────────────────────────────────────────────────────────
-
 def make_gitlab_desc_from_huly(identifier, status):
     return (
         f"Synced from Huly\n\n"
@@ -177,8 +169,6 @@ def extract_huly_sync_id(description: str):
     m = re.search(r'<!-- huly-sync:([A-Z0-9\-]+) -->', description)
     return m.group(1) if m else None
 
-# ─── CRITICAL: Check GitLab by marker, NOT by title ──────────────────────────
-
 async def gitlab_huly_issue_exists(huly_identifier: str) -> bool:
     """Check if GitLab already has an issue with this specific Huly ID marker."""
     if not GITLAB_API_TOKEN or not GITLAB_PROJECT_ID:
@@ -186,7 +176,6 @@ async def gitlab_huly_issue_exists(huly_identifier: str) -> bool:
     
     async with httpx.AsyncClient() as client:
         try:
-            # Search for the marker in the description
             r = await client.get(
                 f"{GITLAB_API_URL}/projects/{GITLAB_PROJECT_ID}/issues",
                 headers={"Authorization": f"Bearer {GITLAB_API_TOKEN}"},
@@ -200,8 +189,6 @@ async def gitlab_huly_issue_exists(huly_identifier: str) -> bool:
         except Exception as e:
             print(f"⚠️  GitLab check error: {e}")
     return False
-
-# ── Node bridge ───────────────────────────────────────────────────────────────
 
 async def run_bridge(*args, timeout=60) -> tuple[bool, str]:
     if not HULY_READY:
@@ -225,8 +212,6 @@ async def run_bridge(*args, timeout=60) -> tuple[bool, str]:
         print(f"   [bridge] {line}")
 
     return proc.returncode == 0, stdout.decode(errors="replace").strip()
-
-# ── Huly → GitLab polling ────────────────────────────────────────────────────
 
 async def poll_huly_forever():
     await asyncio.sleep(30)
@@ -268,12 +253,10 @@ async def sync_huly_to_gitlab():
         title = issue.get("title", "(no title)")
         status = issue.get("status", "")
         
-        # ─── CHECK IF ALREADY IN DB ──────────────────────────────────────────
         if identifier in known:
             print(f"⏭️  Already known: {identifier}")
             continue
         
-        # ─── CHECK IF ALREADY IN GITLAB BY MARKER ──────────────────────────
         if await gitlab_huly_issue_exists(identifier):
             print(f"⏭️  Already in GitLab ({identifier}): {title}")
             save_issue(
@@ -300,8 +283,6 @@ async def sync_huly_to_gitlab():
 
     print(f"✅ Poll done — {new_count} new issue(s) sent to GitLab")
 
-# ── GitLab API ────────────────────────────────────────────────────────────────
-
 async def create_gitlab_issue(title, description, project_id) -> bool:
     headers = {"Authorization": f"Bearer {GITLAB_API_TOKEN}", "Content-Type": "application/json"}
     async with httpx.AsyncClient() as client:
@@ -319,8 +300,6 @@ async def create_gitlab_issue(title, description, project_id) -> bool:
         except Exception as e:
             print(f"❌ GitLab error: {e}")
     return False
-
-# ── FastAPI ───────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app):
@@ -382,8 +361,6 @@ async def test_huly():
     return {"huly_ready": HULY_READY, "workspace": HULY_WORKSPACE,
             "project": HULY_PROJECT_IDENTIFIER}
 
-# ── Webhook ───────────────────────────────────────────────────────────────────
-
 @app.post("/webhook/gitlab")
 async def gitlab_webhook(
     request: Request,
@@ -422,8 +399,6 @@ async def gitlab_webhook(
 
     return {"status": "success", "event": event_type}
 
-# ── Issue processing ──────────────────────────────────────────────────────────
-
 async def process_gitlab_issue(payload: dict):
     issue_data   = payload.get("object_attributes", {})
     project_data = payload.get("project", {})
@@ -440,7 +415,6 @@ async def process_gitlab_issue(payload: dict):
     created = issue_data.get("created_at")
     action  = issue_data.get("action", "open")
 
-    # ── LOOP PREVENTION ───────────────────────────────────────────────────────
     huly_origin = extract_huly_sync_id(desc)
     if huly_origin:
         if not huly_id_exists(huly_origin):
@@ -451,12 +425,10 @@ async def process_gitlab_issue(payload: dict):
             print(f"⏭️  #{iid} already in DB (Huly ID: {huly_origin}) — skipping")
         return
 
-    # ── HANDLE UPDATES ────────────────────────────────────────────────────────
     if action == "update" and iid_exists(iid):
         print(f"✏️  #{iid} updated in GitLab — edit sync not yet implemented")
         return
 
-    # ── NEW GITLAB ISSUE → HULY ───────────────────────────────────────────────
     if iid_exists(iid):
         print(f"⏭️  #{iid} already in DB — skipping")
         return
@@ -470,7 +442,6 @@ async def process_gitlab_issue(payload: dict):
 
     ok, result = await run_bridge(title, huly_desc, huly_status, timeout=180)
     if ok:
-        # ─── CRITICAL FIX: Parse the identifier from the JSON response ──────
         try:
             huly_id = json.loads(result).get('identifier', result)
         except Exception:
@@ -479,8 +450,6 @@ async def process_gitlab_issue(payload: dict):
         mark_synced(str(iid), huly_id)
     else:
         print(f"⚠️  Huly failed ({result})")
-
-# ── Main ──────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     print("=" * 50)

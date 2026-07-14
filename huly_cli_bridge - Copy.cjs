@@ -1,4 +1,3 @@
-// huly_cli_bridge.js
 const { exec } = require('child_process');
 const dotenv = require('dotenv');
 const path = require('path');
@@ -14,7 +13,6 @@ async function createHulyIssue(title, description, status = 'Todo') {
     console.error(`📧 Email: ${email}`);
     console.error(`📂 Workspace: ${workspace}`);
 
-    // Escape special characters
     const escapedTitle = title.replace(/"/g, '\\"').replace(/\n/g, ' ');
     const escapedDescription = description.replace(/"/g, '\\"').replace(/\n/g, ' ');
 
@@ -48,7 +46,6 @@ async function createHulyIssue(title, description, status = 'Todo') {
     });
 }
 
-// Get arguments
 const args = process.argv.slice(2);
 if (args.length < 2) {
     console.error('Usage: node huly_cli_bridge.js "Issue Title" "Issue Description" [Status]');

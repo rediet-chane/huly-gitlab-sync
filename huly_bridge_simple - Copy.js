@@ -1,4 +1,3 @@
-// huly_bridge_simple.js - Simplified bridge using CLI
 import { exec } from 'child_process';
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
@@ -18,11 +17,9 @@ async function createHulyIssue(title, description, status) {
     console.error(`📧 Email: ${email}`);
     console.error(`📂 Workspace: ${workspace}`);
 
-    // Escape special characters
     const escapedTitle = title.replace(/"/g, '\\"').replace(/\n/g, ' ');
     const escapedDescription = description.replace(/"/g, '\\"').replace(/\n/g, ' ');
 
-    // Use the CLI tool directly (which we know works)
     let cmd;
     if (token) {
         cmd = `npx -y @bgx4k3p/huly-mcp-server create-issue --title "${escapedTitle}" --description "${escapedDescription}" --workspace ${workspace} --token ${token}`;
@@ -53,7 +50,6 @@ async function createHulyIssue(title, description, status) {
     });
 }
 
-// Get arguments
 const args = process.argv.slice(2);
 if (args.length < 2) {
     console.error('Usage: node huly_bridge_simple.js "Issue Title" "Issue Description" [Status]');
