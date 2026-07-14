@@ -96,6 +96,3 @@ The `render.yaml` file configures everything. Set the environment variables in R
 
 ---
 
-## What I learned building this
-
-Huly's API turned out to be WebSocket-based with no public REST interface, which meant guessing endpoint URLs didn't work. The solution was finding their Node.js SDK and building a subprocess bridge from Python. Along the way I also debugged HMAC-SHA256 webhook signature verification, SQLite persistence issues on ephemeral cloud hosting, and a sync loop problem that caused 1,100+ duplicate GitLab issues before the loop-prevention marker was added.
