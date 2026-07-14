@@ -1,4 +1,4 @@
-# main.py - Complete Fixed Version
+# main.py - Complete Fixed Version with Marker-Based Duplicate Detection
 from fastapi import FastAPI, Request, Header, HTTPException
 from fastapi.responses import HTMLResponse
 from contextlib import asynccontextmanager
@@ -177,33 +177,29 @@ def extract_huly_sync_id(description: str):
     m = re.search(r'<!-- huly-sync:([A-Z0-9\-]+) -->', description)
     return m.group(1) if m else None
 
-# ─── CRITICAL: gitlab_issue_exists function ───────────────────────────────────
+# ─── CRITICAL: Check GitLab by marker, NOT by title ──────────────────────────
 
-async def gitlab_issue_exists(title: str) -> bool:
-    """Check if an issue with this title already exists in GitLab"""
+async def gitlab_huly_issue_exists(huly_identifier: str) -> bool:
+    """Check if GitLab already has an issue with this specific Huly ID marker."""
     if not GITLAB_API_TOKEN or not GITLAB_PROJECT_ID:
         return False
     
-    headers = {"Authorization": f"Bearer {GITLAB_API_TOKEN}"}
-    url = f"{GITLAB_API_URL}/projects/{GITLAB_PROJECT_ID}/issues"
-    
     async with httpx.AsyncClient() as client:
         try:
-            response = await client.get(
-                url,
-                headers=headers,
-                params={"search": title, "state": "all"},
+            # Search for the marker in the description
+            r = await client.get(
+                f"{GITLAB_API_URL}/projects/{GITLAB_PROJECT_ID}/issues",
+                headers={"Authorization": f"Bearer {GITLAB_API_TOKEN}"},
+                params={"search": f"huly-sync:{huly_identifier}", "state": "all", "per_page": 5},
                 timeout=10
             )
-            if response.status_code == 200:
-                issues = response.json()
-                for issue in issues:
-                    if issue.get("title", "").lower() == title.lower():
+            if r.status_code == 200:
+                for issue in r.json():
+                    if f"<!-- huly-sync:{huly_identifier} -->" in (issue.get("description") or ""):
                         return True
-            return False
         except Exception as e:
-            print(f"⚠️  Error checking GitLab: {e}")
-            return False
+            print(f"⚠️  GitLab check error: {e}")
+    return False
 
 # ── Node bridge ───────────────────────────────────────────────────────────────
 
@@ -272,14 +268,14 @@ async def sync_huly_to_gitlab():
         title = issue.get("title", "(no title)")
         status = issue.get("status", "")
         
-        # ─── CHECK IF ALREADY IN DB OR GITLAB ──────────────────────────────
+        # ─── CHECK IF ALREADY IN DB ──────────────────────────────────────────
         if identifier in known:
             print(f"⏭️  Already known: {identifier}")
             continue
-            
-        if await gitlab_issue_exists(title):
-            print(f"⏭️  Issue already exists in GitLab: {title}")
-            # Add to known so we don't check again
+        
+        # ─── CHECK IF ALREADY IN GITLAB BY MARKER ──────────────────────────
+        if await gitlab_huly_issue_exists(identifier):
+            print(f"⏭️  Already in GitLab ({identifier}): {title}")
             save_issue(
                 iid=identifier, title=title, description="",
                 state=status, author="huly", project=HULY_PROJECT_IDENTIFIER,
