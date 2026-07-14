@@ -1,0 +1,16 @@
+{
+  "name": "huly-gitlab-sync",
+  "version": "1.0.0",
+  "description": "Huly-GitLab Sync Service",
+  "type": "module",
+  "main": "huly_api.js",
+  "scripts": {
+    "setup": "node huly_api.js --list-projects",
+    "start": "python main.py"
+  },
+  "dependencies": {
+    "@firfi/huly-mcp": "^0.44.4",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "dotenv": "^16.6.1"
+  }
+}

@@ -1,4 +1,4 @@
-# main.py - Complete Working Version with Permanent Duplicate Fix
+# main.py - Complete Working Version with All Fixes
 from fastapi import FastAPI, Request, Header, HTTPException
 from fastapi.responses import HTMLResponse
 from contextlib import asynccontextmanager
@@ -30,6 +30,7 @@ NODE_CMD = shutil.which("node.exe" if sys.platform == "win32" else "node") or "n
 
 # ── Database ──────────────────────────────────────────────────────────────────
 
+# Use a persistent path on Render, otherwise local
 _RENDER_DATA = Path("/var/data")
 DB_PATH = str(_RENDER_DATA / "webhooks.db") if _RENDER_DATA.exists() else "webhooks.db"
 
@@ -326,12 +327,16 @@ async def test_huly():
     return {"huly_ready": HULY_READY, "workspace": HULY_WORKSPACE,
             "project": HULY_PROJECT_IDENTIFIER, "bridge_exists": BRIDGE_SCRIPT.exists()}
 
+# ── Fix Duplicates Endpoint ──────────────────────────────────────────────────
+
 @app.get("/fix-duplicates")
 async def fix_duplicates():
     """Clean up duplicate issues in the database"""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
+        
+        # Find duplicates - issues with the same huly_identifier
         c.execute('''
             SELECT huly_identifier, COUNT(*) as cnt 
             FROM issues 
@@ -340,16 +345,20 @@ async def fix_duplicates():
             HAVING cnt > 1
         ''')
         duplicates = c.fetchall()
+        
         deleted = 0
         for huly_id, count in duplicates:
+            # Keep the one with source='huly', delete the others
             c.execute('''
                 DELETE FROM issues 
                 WHERE huly_identifier = ? 
                 AND source = 'gitlab'
             ''', (huly_id,))
             deleted += c.rowcount
+        
         conn.commit()
         conn.close()
+        
         return {
             "status": "success",
             "duplicate_groups": len(duplicates),
@@ -398,37 +407,34 @@ async def gitlab_webhook(
 
     return {"status": "success", "event": event_type}
 
-# ── PERMANENT DUPLICATE FIX ──────────────────────────────────────────────────
+# ── Issue processing ──────────────────────────────────────────────────────────
 
 async def process_gitlab_issue(payload: dict):
-    issue_data = payload.get("object_attributes", {})
+    issue_data   = payload.get("object_attributes", {})
     project_data = payload.get("project", {})
     if not issue_data:
         return
 
-    iid = str(issue_data.get("iid", ""))
-    title = issue_data.get("title", "")
-    desc = issue_data.get("description", "") or ""
-    state = issue_data.get("state", "opened")
-    author = issue_data.get("author", {}).get("username", "unknown")
+    iid     = str(issue_data.get("iid", ""))
+    title   = issue_data.get("title", "")
+    desc    = issue_data.get("description", "") or ""
+    state   = issue_data.get("state", "opened")
+    author  = issue_data.get("author", {}).get("username", "unknown")
     project = project_data.get("name", "unknown")
-    url = issue_data.get("url")
+    url     = issue_data.get("url")
     created = issue_data.get("created_at")
     
-    # Extract labels
+    # Extract labels from GitLab
     labels = issue_data.get("labels", [])
     if isinstance(labels, list):
         labels_str = ", ".join(labels) if labels else ""
     else:
         labels_str = str(labels) if labels else ""
 
-    # ─── PERMANENT DUPLICATE FIX ───────────────────────────────────────────
-    # Check if this issue came from our own Huly sync
+    # ── Check if this is from our Huly sync ──────────────────────────────
     huly_id_from_marker = extract_huly_sync_id(desc)
-    
     if huly_id_from_marker:
-        # This issue came from Huly → GitLab sync
-        # Check if we already have it in the database
+        # Check if this Huly ID is already in the database
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute('SELECT 1 FROM issues WHERE huly_identifier = ?', (huly_id_from_marker,))
@@ -436,17 +442,16 @@ async def process_gitlab_issue(payload: dict):
         conn.close()
         
         if existing:
-            print(f"⏭️  #{iid} already exists in DB (Huly ID: {huly_id_from_marker}) — skipping")
+            print(f"⏭️  #{iid} is a duplicate of {huly_id_from_marker} — skipping")
             return
         
-        # First time seeing this Huly ID - save it without syncing back
         if not iid_exists(iid):
             print(f"⏭️  #{iid} came from Huly ({huly_id_from_marker}) — recording, skipping Huly sync")
             save_issue(iid, title, desc, state, author, project, url, created,
                        synced=True, huly_identifier=huly_id_from_marker, source="huly", labels=labels_str)
         return
 
-    # ─── NORMAL GITLAB ISSUE (Not from Huly) ──────────────────────────────
+    # Deduplicate: if we already have this GitLab issue in the DB, skip
     if iid_exists(iid):
         print(f"⏭️  #{iid} already in DB — skipping")
         return
@@ -454,10 +459,10 @@ async def process_gitlab_issue(payload: dict):
     print(f"📝 #{iid} — {title} ({state}) by {author}")
     save_issue(iid, title, desc, state, author, project, url, created, synced=False, labels=labels_str)
 
-    # Create in Huly
-    status_map = {"opened": "Todo", "closed": "Done", "reopened": "Todo"}
+    status_map  = {"opened": "Todo", "closed": "Done", "reopened": "Todo"}
     huly_status = status_map.get(state, "Todo")
     
+    # Include labels in the Huly description
     labels_section = f"\n\n**Labels**: {labels_str}" if labels_str else ""
     huly_desc = f"{desc}{labels_section}\n\n---\n**Source**: GitLab #{iid}\n**URL**: {url}"
 
