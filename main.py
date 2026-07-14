@@ -218,6 +218,18 @@ async def sync_huly_to_gitlab():
         else:
             labels_str = str(labels) if labels else ""
 
+        # ─── PERMANENT FIX: Check if already exists in GitLab ──────────────
+        if await gitlab_issue_exists(title):
+            print(f"⏭️  Issue already exists in GitLab: {title}")
+            # Add to known so we don't check again
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute('INSERT OR IGNORE INTO issues (huly_identifier, title, source) VALUES (?, ?, "huly")',
+                      (identifier, title))
+            conn.commit()
+            conn.close()
+            continue
+
         print(f"🔄 New Huly issue → GitLab: {identifier} — {title}")
         desc = make_gitlab_desc_from_huly(title, identifier, status, labels_str)
 
@@ -234,7 +246,7 @@ async def sync_huly_to_gitlab():
             new_count += 1
 
     print(f"✅ Poll done — {new_count} new issue(s) sent to GitLab")
-
+    
 # ── GitLab API ────────────────────────────────────────────────────────────────
 
 async def create_gitlab_issue(title, description, project_id):
