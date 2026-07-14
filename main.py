@@ -34,6 +34,7 @@ _RENDER_DATA = Path("/var/data")
 DB_PATH = str(_RENDER_DATA / "webhooks.db") if _RENDER_DATA.exists() else "webhooks.db"
 
 def parse_huly_id(raw: str) -> str:
+    """Extract just the identifier from the bridge's JSON response."""
     if not raw:
         return raw
     try:
@@ -98,6 +99,7 @@ def save_issue(iid, title, description, state, author, project, url,
     conn.close()
 
 def mark_synced(iid, raw_result):
+    """Parse the Huly identifier from the bridge response and mark as synced."""
     huly_id = parse_huly_id(raw_result)
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -472,8 +474,13 @@ async def process_gitlab_issue(payload: dict):
 
     ok, result = await run_bridge(title, huly_desc, huly_status, timeout=180)
     if ok:
-        huly_id = mark_synced(iid, result)
+        # ─── CRITICAL FIX: Parse the identifier from the JSON response ──────
+        try:
+            huly_id = json.loads(result).get('identifier', result)
+        except Exception:
+            huly_id = result
         print(f"✅ Created in Huly: {huly_id}")
+        mark_synced(str(iid), huly_id)
     else:
         print(f"⚠️  Huly failed ({result})")
 

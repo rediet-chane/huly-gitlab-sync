@@ -1,24 +1,60 @@
 # Huly-GitLab Sync Service
 
-A webhook-based integration service that syncs issues between GitLab and Huly.
+**Bidirectional sync between GitLab and Huly** — no copy-pasting needed.
 
-## Features
+- ✅ GitLab → Huly: **Real-time** (webhooks)
+- ✅ Huly → GitLab: **Every 5 minutes** (polling)
+- ✅ **No duplicates** — hidden marker prevents loops
 
-- ✅ **GitLab Webhook Receiver** - Secure webhook endpoint for GitLab events
-- ✅ **Token Validation** - Supports both signing and secret tokens
-- ✅ **Issue Processing** - Parses GitLab issue data
-- ✅ **Logging** - Logs all issues for review
-- ✅ **Ngrok Support** - Public URL for testing
+**Live:** https://huly-gitlab-sync.onrender.com  
+**Dashboard:** https://huly-gitlab-sync.onrender.com/dashboard
 
-## Limitations
+---
 
-Huly's public REST API does not currently support creating issues. The service:
-1. Attempts to connect via WebSocket (experimental)
-2. Logs issues when Huly API is unavailable
+## How it works
+
+**Loop prevention** is handled by a hidden HTML comment (`<!-- huly-sync:HULY-XX -->`) in every issue description. When the system sees this marker, it knows the issue came from the other side and **doesn't sync it back**, preventing infinite loops.
+
+---
+
+## Stack
+
+| Technology | Purpose |
+|------------|---------|
+| **Python + FastAPI** | Webhook receiver & API server |
+| **Node.js + MCP** | Huly API bridge |
+| **SQLite** | Sync history & duplicate prevention |
+| **Render** | Cloud hosting (24/7) |
+| **HTML + CSS + JS** | Dashboard |
+
+---
 
 ## Setup
 
-### 1. Install dependencies
+```bash
+# Clone the repo
+git clone https://github.com/rediet-chane/huly-gitlab-sync
+cd huly-gitlab-sync
+
+# Install dependencies
+pip install -r requirements.txt
+npm install
+
+# Configure credentials
+cp .env.example .env
+# Edit .env with your GitLab and Huly credentials
+
+# Run the service
+python main.py
+
+---
+
+## 🚀 **Deploy the Fix**
 
 ```bash
-pip install -r requirements.txt
+# Replace main.py with the fix
+# Replace README.md with the new version
+
+git add main.py README.md
+git commit -m "Fix: Parse Huly ID from JSON response to prevent duplicates"
+git push
